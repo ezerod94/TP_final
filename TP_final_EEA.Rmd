@@ -139,21 +139,21 @@ model_trad$summary()
 
 ```{r}
 # entreno la red
-#history <- model_trad %>% fit(
-#  x = x,
-#  y = y,
-#  batch_size = 16,
-#  epochs = 1000,
-#  verbose = 1)
+history <- model_trad %>% fit(
+  x = x,
+  y = y,
+  batch_size = 16,
+  epochs = 3000,
+  verbose = 0)
 
 # veo la evolución de la función de pérdida durante el entrenamiento
-#plot(history)
+plot(history)
 ```
 
 ```{r}
 # guardo/cargo los pesos de la red
 # acordarse de setwd() para el path donde estén los pesos guardados
-#save_model_weights_hdf5(model_trad, "model_trad.hdf5")
+# save_model_weights_hdf5(model_trad, "model_trad.hdf5")
 model_trad<- load_model_weights_hdf5(model_trad, "model_trad.hdf5")
 ```
 
@@ -329,9 +329,9 @@ model_vi$summary()
 #history <- model_vi %>% fit(
 #  x = x,
 #  y = y,
-#  batch_size = 16,
-#  epochs = 1000,
-#  verbose = 1)
+#  batch_size = 512,
+#  epochs = 20000,
+#  verbose = 0)
 
 # veo la evolución de la función de pérdida durante el entrenamiento
 #plot(history)
@@ -500,4 +500,8 @@ grid.arrange(gg5, gg6, gg7, gg2, gg3, gg4, ncol=3, heights=c(2,2))
 ```
 
 En la región en la que tenemos datos de entrenamiento, todos los enfoques dan resultados similares: La incertidumbre capturada por la dispersión de la distribución de probabilidad condicional es grande en las regiones donde la dispersión de los datos es grande. Por tanto, todos los modelos son capaces de modelar la incertidumbre aleatoria. Cuando salimos de la región en la que tenemos datos y entramos en la región de extrapolación, el enfoque no-bayesiano falla. Asume el 95% de los datos en una región irrealmente estrecha. Los enfoques bayesianos saben cuándo no saben y pueden expresar sus incertidumbres cuando abandonan los terrenos conocidos.
+
+
+
+
 
