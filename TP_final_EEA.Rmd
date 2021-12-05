@@ -1,0 +1,488 @@
+---
+title: "TP final de Enfoque Estadístico del Aprendizaje"
+subtitle: "Caso práctico de regresión con redes neuronales bayesianas"
+author: "Rodriguez Ezequiel, Sodor Diego"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+---
+
+## *Introducción* 
+
+### *Objetivo*
+
+En este R-markdown se investiga las ventajas de las Redes Neuronales Bayesianas en una tarea de regresión. Primero, se ajusta una red común y también una red que sigue el enfoque probabilístico. Luego luego se ajustan dos redes neuronales bayesianas, una por inferencia variacional y otra por MC-dropout. Finalmente se comparan los resultados de los diferentes modelos, especialmente echando un vistazo al caso de extrapolación. El contenido fue adaptado del libro [Probabilistic Deep Learning 
+With Python, Keras and TensorFlow Probability](https://www.manning.com/books/probabilistic-deep-learning?gclid=CjwKCAiAwKyNBhBfEiwA_mrUMuIHP8uQ2C9MyT2diZL2svnD96eF58XsBltqn910eGtM-HgLG7gPmxoC62QQAvD_BwE)
+
+***
+
+### *Uso*
+
+La idea del script, es que intentar entender el código proporcionado ejecutándolo, comprobando la salida y jugando con él cambiando ligeramente el código y volviéndolo a ejecutar.
+
+***
+
+### *Conjunto de datos*
+
+Un conjunto de datos simulados con una onda sinusoidal que tiene una pequeña tendencia lineal positiva y una varianza que depende de la amplitud.
+
+***
+
+### *Contenido*:
+
+* Generación del conjunto de datos
+* Ajuste tradicional de red neuronal
+* Ajuste de modelo de regresión probabilístico no bayesiano
+* Ajuste de modelo de regresión bayesiano mediante Inferencia Variacional
+* Ajuste de modelo de regresión bayesiano mediante el MC-DropOut
+* Comparación entre enfoques estadísticos
+
+
+## *Generación del conjunto de datos*
+
+Antes de comenzar a generar los datos y a entrenar redes, vamos a asegurarnos de contar con las librerías necesarias instaladas. Correr el siguiente chunk si no tiene *TensorFlow Probability* instalado en su equipo.
+
+```{r}
+# instalación e importación de librerías
+# devtools::install_github("rstudio/tfprobability")
+# library(tfprobability)
+# install_tfprobability()
+# install_tfprobability(version = "nightly")
+# remotes::install_github("rstudio/reticulate")
+```
+
+
+En los siguientes chunks, vamos a cargar todas las librerías necesarias y a simular un conjunto de datos con una onda sinusoidal que tiene una pequeña pendiente lineal y una varianza que se hace mayor con la amplitud.
+
+```{r message=FALSE}
+# importo librerías principales
+library(tensorflow)
+# compatibilidad con tf v2
+tf$compat$v2$enable_v2_behavior()
+library(tfprobability)
+library(keras)
+
+#use_virtualenv("keras-2.7.0")
+# import librerías secundarias
+library(dplyr)
+library(tidyr)
+library(matrixStats)
+require(gridExtra)
+library(ggplot2);theme_set(theme_light())
+```
+
+
+```{r}
+# seteo semilla
+tf$random$set_seed(42)
+
+# función para generar datos
+create_sine_data <- function(n){
+  set.seed(32)
+  x <- seq(0, 1*2*pi, length.out = n)
+  y1 <- 3*sin(x)
+  y1 <- c(seq(0,0, length.out= 60),
+          y1 + mapply(rnorm, n = seq(1,1, length.out=length(y1)), mean = seq(0,0, length.out=length(y1)), sd = 0.15*abs(y1)),
+          seq(0,0, length.out=60))
+  x <- c(seq(-3,0, length.out= 60),
+         seq(0,3*2*pi, length.out = n),
+         seq(3*2*pi,3*2*pi+3,length.out=60))
+  y2 <- 0.1*x+1
+  y <- y1 + y2
+  data <- data.frame(x = x, y =  y)
+  data
+}
+
+# guardo los datos y creo figura
+data <- create_sine_data(2048)
+data <- data[sample(nrow(data), 2048), ]
+x <- data$x
+y <- data$y
+
+ggplot(data, aes(y = y, x = x)) + 
+  geom_point(size = 0.5, color = 'blue') + 
+  ggtitle("Datos simulados") + 
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+## *Red Neuronal Tradicional*
+
+Ahora vamos a crear y entrenar una red con tres capas ocultas y con un nodo de salida para ajustar un modelo de regresión en el que la esperanza condicional $E(Y|X)$ puede depender de forma no lineal de $X$. Como la varianza no se modela, la función de pérdida viene dada por el error cuadrático medio (MSE por sus siglas en inglés). 
+
+En el libro de referencia se deriva esta función de pérdida a partir del estimador de Máxima Verosimilitud, que es equivalente a minimizar el logaritmo de la verosimilitud negativa $argmin(- \Sigma_{i=1}^{n} -\log (y_i| x_i, w_i)$, donde $w_i$ son los pesos de las neuronas y $(y_i, x_i)$ los pares de observaciones.
+
+```{r include=FALSE}
+# creo capa de entrada que va a ser común a todos los modelos
+inputs <- layer_input(shape = c(1))
+
+# defino arquitectura de la red
+capas <- inputs  %>% 
+  layer_dense(units = 20, activation = 'relu') %>% 
+  layer_dense(units = 50, activation = 'relu') %>% 
+  layer_dense(units = 20, activation = 'relu') %>% 
+  layer_dense(units = 1, activation = 'linear')
+
+```
+
+```{r}
+# creo modelo y lo compilo
+model_trad <- keras_model(inputs=inputs, outputs= capas)
+model_trad %>% compile(optimizer = "adam", loss = 'mean_squared_error')
+
+# resumen
+model_trad$summary()
+```
+
+
+```{r}
+# entreno la red
+#history <- model_trad %>% fit(
+#  x = x,
+#  y = y,
+#  batch_size = 16,
+#  epochs = 1000,
+#  verbose = 1)
+
+# veo la evolución de la función de pérdida durante el entrenamiento
+#plot(history)
+```
+
+```{r}
+# guardo/cargo los pesos de la red
+# acordarse de setwd() para el path donde estén los pesos guardados
+#save_model_weights_hdf5(model_trad, "model_trad.hdf5")
+model_trad<- keras::load_model_weights_hdf5(model_trad, "model_trad.hdf5")
+```
+
+```{r}
+# creo figura con la predicción
+x_pred <- seq(-10, 30, length.out=134)
+pred_mu <- model_trad$predict(x_pred)
+
+data_pred_trad <- data.frame(x = x_pred, y = pred_mu)
+
+gg1 <- ggplot() +
+  geom_point(data = data, aes(x = x, y = y), size = 0.5, color = 'blue') +
+  geom_line(data = data_pred_trad, aes(x = x, y = y ), color = "red", linetype="twodash") + 
+  ggtitle(label = "Predicción de Red Neuronal", subtitle = "Enfoque Tradicional") + 
+  theme(plot.title = element_text(hjust = 0.5), plot.subtitle = element_text(hjust = 0.5))
+
+gg1
+```
+
+
+## *Red Neuronal Probabilística No Bayesiana*
+
+Creamos un modelo no bayesiano para la media $\mu_x$ y la desviación estándar $\sigma_x$ de una gausiana para la esperanza de $Y$.
+
+```{r include=FALSE, error=TRUE}
+# primer modelo probabilístico
+
+# función de pérdida -log(verosimilitud)
+negloglik <- function(y, model) - (model %>% tfd_log_prob(y))
+
+# defino arquitectura de la red
+dist <- inputs  %>% 
+  layer_dense(units = 20, activation = 'relu') %>% 
+  layer_dense(units = 50, activation = 'relu') %>% 
+  layer_dense(units = 20, activation = 'relu') %>% 
+  layer_dense(units = 2)  %>% 
+  layer_distribution_lambda(function(x)
+    tfd_normal(loc = x[, 1, drop = FALSE],
+               scale = 1e-3 + 0.05 * tf$math$softplus(x[, 2, drop = FALSE])
+    )
+  )
+```
+
+```{r}
+# creo modelo y lo compilo
+model_nobay <- keras_model(inputs=inputs, outputs= dist)
+model_nobay %>% compile(optimizer = "adam", loss = negloglik)
+
+# resumen
+model_nobay$summary()
+
+```
+
+```{r}
+# entreno la red
+#history <- model_nobay %>% fit(
+ # x = x,
+#  y = y,
+ # batch_size = 32,
+#  epochs = 2500,
+#  verbose = 1)
+
+# veo la evolución de la función de pérdida durante el entrenamiento
+#plot(history)
+```
+
+```{r}
+# guardo/cargo los pesos de la red
+#save_model_weights_hdf5(model_nobay, "model_nobay.hdf5")
+model_nobay = load_model_weights_hdf5(model_nobay, "model_nobay.hdf5")
+
+# veo como son 2 predicciones distintas para los 1ros 3 puntos
+for (rep in 1:2){ 
+  print(model_nobay$predict(x_pred)[1:3,])
+  } 
+```
+```{r}
+# calculo la probabilidad condicionar de Y dados los X y los pesos
+
+# creo matrix para guardar resultados de 200 predicciones
+runs <- 200
+nobay_cpd <- matrix(0, runs, length(x_pred))
+for (i in 1:200){
+  nobay_cpd[i,] = model_nobay$predict(x_pred)
+}
+
+# calculos los siguientes cuantiles y los guardo en un data.frame
+probs <- c(0.025, 0.5, 0.975)
+q <- colQuantiles(nobay_cpd, probs = probs)
+data_pred_nobay <- data.frame(x = x_pred, lower_ci = q[,1] , mean_pred = q[,2], upper_ci = q[,3])
+
+
+# creo la figura para un intervalo de confianza del 95%
+gg2 <- ggplot() +
+  geom_point(data = data, aes(x = x, y = y), size = 0.5, color = 'blue') +
+  geom_line(data = data_pred_nobay, aes(x = x, y = lower_ci), color = "red", linetype="twodash") + 
+  geom_line(data = data_pred_nobay, aes(x = x, y = upper_ci), color="red", linetype="twodash") +
+  geom_line(data = data_pred_nobay, aes(x = x, y = mean_pred), size = 1, color="green", linetype="twodash") +
+  ggtitle(label = "Distribución de probabilidad condicional de Y", subtitle = "Enfoque Probabilístico") + 
+  theme(plot.title = element_text(hjust = 0.5), plot.subtitle = element_text(hjust = 0.5))
+
+gg2
+```
+
+## *Red Bayesiana - Inferencia Variacional*
+
+Ahora entrenamos una red neuronal bayesiana mediante inferencia variacional. Volvemos a utilizar la misma arquitectura que antes. Pero ahora en lugar de pesos, aproximamos la distribución de probabilidad a posteriori de los pesos con una distribución normal.
+
+La distribución normal tiene dos parámetros y, por lo tanto, casi se duplican los parámetros (no utilizamos una distribución para los términos de sesgo) en la red. Como el entrenamiento lleva mucho tiempo, se carga una red ya entrenada con la curva de aprendizaje.
+
+El modelo en sí es la distribución de probabilidad condicionada de $y$ definida como $p(y|x) = N(y,\mu_x,\sigma_x)$
+
+```{r include=FALSE, error=TRUE}
+
+# divergencia de Kullback-Leibler para los dist de pesos
+n <- length(y) %>% tf$cast(tf$float32)
+kl_div <- function(q, p, unused)
+  tfd_kl_divergence(q, p) / n
+
+# defino arquitectura de red
+dist <- inputs %>%
+  layer_dense_flipout(units = 20,
+                      bias_posterior_fn = tfp$layers$util$default_mean_field_normal_fn(),
+                      bias_prior_fn = tfp$layers$util$default_multivariate_normal_fn,
+                      kernel_divergence_fn = kl_div,
+                      bias_divergence_fn = kl_div,
+                      activation="relu") %>%
+  layer_dense_flipout(units = 50,    bias_posterior_fn = tfp$layers$util$default_mean_field_normal_fn(),
+                                  bias_prior_fn = tfp$layers$util$default_multivariate_normal_fn,
+                                  kernel_divergence_fn = kl_div,
+                                  bias_divergence_fn = kl_div,
+                                  activation="relu") %>%
+  layer_dense_flipout(units = 20,    bias_posterior_fn = tfp$layers$util$default_mean_field_normal_fn(),
+                                  bias_prior_fn = tfp$layers$util$default_multivariate_normal_fn,
+                                  kernel_divergence_fn = kl_div,
+                                  bias_divergence_fn = kl_div,
+                                  activation="relu") %>%
+  layer_dense_flipout(units = 2,     bias_posterior_fn = tfp$layers$util$default_mean_field_normal_fn(),
+                                  bias_prior_fn = tfp$layers$util$default_multivariate_normal_fn,
+                                  kernel_divergence_fn = kl_div,
+                                  bias_divergence_fn = kl_div,
+                                  name = 'params_vi') %>%
+     layer_distribution_lambda(function(x)
+     tfd_normal(loc = x[, 1, drop = FALSE],
+               scale = 1e-3 + 0.05 * tf$math$softplus(x[, 2, drop = FALSE])
+    )
+  ) 
+```
+
+```{r}
+# creo modelo y lo compilo
+model_vi <- keras_model(inputs=inputs, outputs= dist)
+params <- keras_model(inputs=inputs, outputs= model_vi$get_layer('params_vi')$output)
+model_vi  %>% compile(optimizer=optimizer_adam(learning_rate = 0.001), loss = negloglik) 
+
+#resumen
+model_vi$summary()
+```
+
+```{r}
+# entreno la red
+#history <- model_vi %>% fit(
+#  x = x,
+#  y = y,
+#  batch_size = 16,
+#  epochs = 1000,
+#  verbose = 1)
+
+# veo la evolución de la función de pérdida durante el entrenamiento
+#plot(history)
+```
+
+
+```{r}
+# guardo/cargo los pesos de la red
+#save_model_weights_hdf5(model_vi, "model_vi.hdf5")
+load_model_weights_hdf5(model_vi, "model_vi.hdf5")
+
+# 2 predicciones distinas
+for (rep in 1:2){ 
+  print(model_vi$predict(x_pred)[1:3,])
+} 
+
+# 2 sampleos de params para la normal (anteúltima capa)
+for (rep in 1:2){ 
+  print(params$predict(x_pred)[1:3,])
+  }
+```
+
+```{r}
+# calculo la probabilidad condicionar de Y dados los X y los pesos
+
+# creo matrix para guardar resultados de 200 predicciones
+vi_cpd <- matrix(0, runs, length(x_pred))
+for (i in 1:200){
+  vi_cpd[i,] = model_vi$predict(x_pred)
+}
+
+# calculos cuantiles de interés y los guardo en un data.frame
+q <- colQuantiles(vi_cpd, probs = probs)
+data_pred_vi <- data.frame(x = x_pred, lower_ci = q[,1] , mean_pred = q[,2], upper_ci = q[,3])
+
+# creo la figura para un intervalo de confianza del 95%
+gg3 <- ggplot() +
+  geom_point(data = data, aes(x = x, y = y), size = 0.5, color = 'blue') +
+  geom_line(data = data_pred_vi, aes(x = x, y = lower_ci), color = "red", linetype="twodash") + 
+  geom_line(data = data_pred_vi, aes(x = x, y = upper_ci), color="red", linetype="twodash") +
+  geom_line(data = data_pred_vi, aes(x = x, y = mean_pred), size = 1, color="green", linetype="twodash") +
+  ggtitle(label = "Distribución de probabilidad condicional de Y", subtitle = "Enfoque Bayesiano - Inferencia variacional") + 
+  theme(plot.title = element_text(hjust = 0.5), plot.subtitle = element_text(hjust = 0.5))+ ylim(-2, 6)+ xlim(-5,25)
+
+gg3
+```
+
+## *Red Bayesiana - Monte Carlo DroptOut*
+
+Repetimos el análisis anterior pero esta vez utilizando MC-Dropout en lugar de IV.
+
+```{r include=FALSE, error=TRUE}
+# defino arquitectura de red
+dist_mc <- inputs %>%
+             layer_dense(units = 200, activation="relu") %>%
+             layer_dropout(rate = 0.1, trainable = T) %>%
+             layer_dense(units = 500, activation="relu") %>%
+             layer_dropout(rate = 0.1, trainable = T) %>%
+             layer_dense(units = 500, activation="relu")%>%
+             layer_dropout(rate = 0.1, trainable = T) %>%
+             layer_dense(units = 500, activation="relu") %>%
+             layer_dropout(rate = 0.1, trainable = T) %>%
+             layer_dense(units = 200, activation="relu") %>%
+             layer_dropout(rate = 0.1, trainable = T) %>%
+             layer_dense(units = 2, name = 'params_mc') %>% 
+             layer_distribution_lambda(function(x)
+                            tfd_normal(loc = x[, 1, drop = FALSE],
+                                       scale = tf$math$exp(x[, 2, drop = FALSE])))
+```
+
+```{r}
+# creo modelo y lo compilo
+model_mc <- keras_model(inputs=inputs, outputs= dist_mc)
+model_mc  %>% compile(optimizer=optimizer_adam(learning_rate = 0.0002), loss = negloglik) 
+
+#resumen
+model_mc$summary()
+```
+
+```{r}
+# entreno la red
+#history <- model_mc %>% fit(
+#  x = x,
+#  y = y,
+#  batch_size = 512,
+#  epochs = 1000,
+#  verbose = 1)
+
+# veo la evolución de la función de pérdida durante el entrenamiento
+#plot(history)
+```
+
+
+```{r}
+# guardo/cargo los pesos de la red
+#save_model_weights_hdf5(model_mc, "model_mc.hdf5")
+load_model_weights_hdf5(model_mc, "model_mc.hdf5")
+```
+
+```{r}
+# calculo la probabilidad condicionar de Y dados los X y los pesos
+
+# creo matrix para guardar resultados de 200 predicciones
+mc_cpd <- matrix(0, runs, length(x_pred))
+for (i in 1:200){
+  mc_cpd[i,] = model_mc$predict(x_pred)
+}
+
+# calculos cuantiles de interés y los guardo en un data.frame
+q <- colQuantiles(mc_cpd, probs = probs)
+data_pred_mc <- data.frame(x = x_pred, lower_ci = q[,1] , mean_pred = q[,2], upper_ci = q[,3])
+
+# creo la figura para un intervalo de confianza del 95%
+gg4 <- ggplot() +
+  geom_point(data = data, aes(x = x, y = y), size = 0.5, color = 'blue') +
+  geom_line(data = data_pred_mc, aes(x = x, y = lower_ci), color = "red", linetype="twodash") + 
+  geom_line(data = data_pred_mc, aes(x = x, y = upper_ci), color="red", linetype="twodash") +
+  geom_line(data = data_pred_mc, aes(x = x, y = mean_pred), size = 1, color="green", linetype="twodash") +
+  ggtitle(label = "Distribución de probabilidad condicional de Y", subtitle = "Enfoque Bayesiano - Monte Carlo Dropout") + 
+  theme(plot.title = element_text(hjust = 0.5), plot.subtitle = element_text(hjust = 0.5))+ ylim(-2, 6)+ xlim(-5,25) 
+
+gg4
+```
+
+## *Comparación entre enfoques estadísticos*
+
+Ahora podemos comparar los tres enfoques estadísticos.
+
+```{r}
+i = sample(1:200, size=1)
+
+sample_nobay = data.frame(x = x_pred, y =  nobay_cpd[i,])
+
+gg2 <- gg2 + ggtitle(label = "IC 95") + theme(plot.title = element_text(size = 10)) + labs(subtitle = NULL)
+gg3 <- gg3 + ggtitle(label = "IC 95") + theme(plot.title = element_text(size = 10)) + labs(subtitle = NULL)
+gg4 <- gg4 + ggtitle(label = "IC 95") + theme(plot.title = element_text(size = 10)) + labs(subtitle = NULL)
+
+
+gg5 <- ggplot() +
+  geom_point(data = data, aes(x = x, y = y), size = 0.5, color = 'blue') +
+  geom_line(data = sample_nobay, aes(x = x, y = y), color = "red", linetype="twodash") + 
+  ggtitle(label = "Enfoque Probabilístico", subtitle = "Predicción aleatoria") + 
+  theme(plot.title = element_text(hjust = 0.5), plot.subtitle = element_text(hjust = 0.5))
+
+sample_vi = data.frame(x = x_pred, y =  vi_cpd[i,])
+
+gg6 <- ggplot() +
+  geom_point(data = data, aes(x = x, y = y), size = 0.5, color = 'blue') +
+  geom_line(data = sample_vi, aes(x = x, y = y), color = "red", linetype="twodash") + 
+  ggtitle(label = "Enfoque Bayesiano - IV", subtitle = "Predicción aleatoria") + 
+  theme(plot.title = element_text(hjust = 0.5), plot.subtitle = element_text(hjust = 0.5))
+
+sample_mc = data.frame(x = x_pred, y =  mc_cpd[i,])
+
+gg7 <- ggplot() +
+  geom_point(data = data, aes(x = x, y = y), size = 0.5, color = 'blue') +
+  geom_line(data = sample_mc, aes(x = x, y = y), color = "red", linetype="twodash") + 
+  ggtitle(label = "Enfoque Bayesiano - MCD", subtitle = "Predicción aleatoria") + 
+  theme(plot.title = element_text(hjust = 0.5), plot.subtitle = element_text(hjust = 0.5))
+
+
+grid.arrange(gg5, gg6, gg7, gg2, gg3, gg4, ncol=3, heights=c(2,2)) 
+```
+
+En la región en la que tenemos datos de entrenamiento, todos los enfoques dan resultados similares: La incertidumbre capturada por la dispersión de la distribución de probabilidad condicional es grande en las regiones donde la dispersión de los datos es grande. Por tanto, todos los modelos son capaces de modelar la incertidumbre aleatoria. Cuando salimos de la región en la que tenemos datos y entramos en la región de extrapolación, el enfoque no-bayesiano falla. Asume el 95% de los datos en una región irrealmente estrecha. Los enfoques bayesianos saben cuándo no saben y pueden expresar sus incertidumbres cuando abandonan los terrenos conocidos.
+
