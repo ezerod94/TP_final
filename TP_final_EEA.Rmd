@@ -468,9 +468,9 @@ i = sample(1:200, size=1)
 
 sample_nobay = data.frame(x = x_pred, y =  nobay_cpd[i,])
 
-gg2 <- gg2 + ggtitle(label = "IC 95") + theme(plot.title = element_text(size = 10)) + labs(subtitle = NULL) + ylim(-2, 6)+ xlim(-10,30) 
-gg3 <- gg3 + ggtitle(label = "IC 95") + theme(plot.title = element_text(size = 10)) + labs(subtitle = NULL) + ylim(-2, 6)+ xlim(-10,30) 
-gg4 <- gg4 + ggtitle(label = "IC 95") + theme(plot.title = element_text(size = 10)) + labs(subtitle = NULL) + ylim(-2, 6)+ xlim(-10,30) 
+gg2 <- gg2 + ggtitle(label = "IC 95%") + theme(plot.title = element_text(size = 10)) + labs(subtitle = NULL) + ylim(-2, 6)+ xlim(-10,30) 
+gg3 <- gg3 + ggtitle(label = "IC 95%") + theme(plot.title = element_text(size = 10)) + labs(subtitle = NULL) + ylim(-2, 6)+ xlim(-10,30) 
+gg4 <- gg4 + ggtitle(label = "IC 95%") + theme(plot.title = element_text(size = 10)) + labs(subtitle = NULL) + ylim(-2, 6)+ xlim(-10,30) 
 
 
 gg5 <- ggplot() +
