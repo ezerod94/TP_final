@@ -76,7 +76,7 @@ library(ggplot2);theme_set(theme_light())
 
 ```{r}
 # seteo semilla
-tf$random$set_seed(42)
+tf$random$set_seed(32)
 
 # función para generar datos
 create_sine_data <- function(n){
@@ -113,22 +113,23 @@ Ahora vamos a crear y entrenar una red con tres capas ocultas y con un nodo de s
 
 En el libro de referencia se deriva esta función de pérdida a partir del estimador de Máxima Verosimilitud, que es equivalente a minimizar el logaritmo de la verosimilitud negativa $argmin(- \Sigma_{i=1}^{n} -\log (y_i| x_i, w_i)$, donde $w_i$ son los pesos de las neuronas y $(y_i, x_i)$ los pares de observaciones.
 
-```{r include=FALSE}
-# creo capa de entrada que va a ser común a todos los modelos
-inputs <- layer_input(shape = c(1))
+```{r}
+l <- tf$keras$layers
+
+# creo capa de entrada 
+inputs <- l$Input(shape = c(1L))
 
 # defino arquitectura de la red
-capas <- inputs  %>% 
-  layer_dense(units = 20, activation = 'relu') %>% 
-  layer_dense(units = 50, activation = 'relu') %>% 
-  layer_dense(units = 20, activation = 'relu') %>% 
-  layer_dense(units = 1, activation = 'linear')
+hidden <- l$Dense(20,activation="relu")(inputs)
+hidden <- l$Dense(50,activation="relu")(hidden)
+hidden <- l$Dense(20,activation="relu")(hidden)
+output <- l$Dense(1,activation="linear")(hidden)
 
 ```
 
 ```{r}
 # creo modelo y lo compilo
-model_trad <- keras_model(inputs=inputs, outputs= capas)
+model_trad <- tf$keras$models$Model(inputs=inputs, outputs= output)
 model_trad %>% compile(optimizer = "adam", loss = 'mean_squared_error')
 
 # resumen
@@ -153,7 +154,7 @@ model_trad$summary()
 # guardo/cargo los pesos de la red
 # acordarse de setwd() para el path donde estén los pesos guardados
 #save_model_weights_hdf5(model_trad, "model_trad.hdf5")
-model_trad<- keras::load_model_weights_hdf5(model_trad, "model_trad.hdf5")
+model_trad<- load_model_weights_hdf5(model_trad, "model_trad.hdf5")
 ```
 
 ```{r}
@@ -180,25 +181,29 @@ Creamos un modelo no bayesiano para la media $\mu_x$ y la desviación estándar 
 ```{r include=FALSE, error=TRUE}
 # primer modelo probabilístico
 
+tfd <- tfp$distributions
 # función de pérdida -log(verosimilitud)
 negloglik <- function(y, model) - (model %>% tfd_log_prob(y))
 
+# creo capa de entrada 
+inputs <- l$Input(shape = c(1L))
+
 # defino arquitectura de la red
-dist <- inputs  %>% 
-  layer_dense(units = 20, activation = 'relu') %>% 
-  layer_dense(units = 50, activation = 'relu') %>% 
-  layer_dense(units = 20, activation = 'relu') %>% 
-  layer_dense(units = 2)  %>% 
-  layer_distribution_lambda(function(x)
-    tfd_normal(loc = x[, 1, drop = FALSE],
+hidden <- l$Dense(20,activation="relu")(inputs)
+hidden <- l$Dense(50,activation="relu")(hidden)
+hidden <- l$Dense(20,activation="relu")(hidden)
+params <- l$Dense(2)(hidden)
+
+dist <- tfp$layers$DistributionLambda(function(x)
+    tfd$Normal(loc = x[, 1, drop = FALSE],
                scale = 1e-3 + 0.05 * tf$math$softplus(x[, 2, drop = FALSE])
     )
-  )
+  )(params)
 ```
 
 ```{r}
 # creo modelo y lo compilo
-model_nobay <- keras_model(inputs=inputs, outputs= dist)
+model_nobay <- tf$keras$models$Model(inputs=inputs, outputs= dist)
 model_nobay %>% compile(optimizer = "adam", loss = negloglik)
 
 # resumen
@@ -239,7 +244,7 @@ for (i in 1:200){
   nobay_cpd[i,] = model_nobay$predict(x_pred)
 }
 
-# calculos los siguientes cuantiles y los guardo en un data.frame
+# creo capa de entrada 
 probs <- c(0.025, 0.5, 0.975)
 q <- colQuantiles(nobay_cpd, probs = probs)
 data_pred_nobay <- data.frame(x = x_pred, lower_ci = q[,1] , mean_pred = q[,2], upper_ci = q[,3])
@@ -270,42 +275,49 @@ El modelo en sí es la distribución de probabilidad condicionada de $y$ definid
 # divergencia de Kullback-Leibler para los dist de pesos
 n <- length(y) %>% tf$cast(tf$float32)
 kl_div <- function(q, p, unused)
-  tfd_kl_divergence(q, p) / n
+  tfd$kl_divergence(q, p) / n
 
-# defino arquitectura de red
-dist <- inputs %>%
-  layer_dense_flipout(units = 20,
+# creo capa de entrada 
+inputs <- l$Input(shape = c(1L))
+
+# defino la arquitectura de red
+hidden <- tfp$layers$DenseFlipout(units = 20L,
                       bias_posterior_fn = tfp$layers$util$default_mean_field_normal_fn(),
                       bias_prior_fn = tfp$layers$util$default_multivariate_normal_fn,
                       kernel_divergence_fn = kl_div,
                       bias_divergence_fn = kl_div,
-                      activation="relu") %>%
-  layer_dense_flipout(units = 50,    bias_posterior_fn = tfp$layers$util$default_mean_field_normal_fn(),
+                      activation="relu")(inputs)
+                      
+hidden <- tfp$layers$DenseFlipout(units = 50L,
+                      bias_posterior_fn = tfp$layers$util$default_mean_field_normal_fn(),
+                      bias_prior_fn = tfp$layers$util$default_multivariate_normal_fn,
+                      kernel_divergence_fn = kl_div,
+                      bias_divergence_fn = kl_div,
+                      activation="relu")(hidden)
+                      
+hidden <- tfp$layers$DenseFlipout(units = 20L,
+                      bias_posterior_fn = tfp$layers$util$default_mean_field_normal_fn(),
+                      bias_prior_fn = tfp$layers$util$default_multivariate_normal_fn,
+                      kernel_divergence_fn = kl_div,
+                      bias_divergence_fn = kl_div,
+                      activation="relu")(hidden)
+                      
+params <- tfp$layers$DenseFlipout(units = 2L,bias_posterior_fn = tfp$layers$util$default_mean_field_normal_fn(),
                                   bias_prior_fn = tfp$layers$util$default_multivariate_normal_fn,
                                   kernel_divergence_fn = kl_div,
-                                  bias_divergence_fn = kl_div,
-                                  activation="relu") %>%
-  layer_dense_flipout(units = 20,    bias_posterior_fn = tfp$layers$util$default_mean_field_normal_fn(),
-                                  bias_prior_fn = tfp$layers$util$default_multivariate_normal_fn,
-                                  kernel_divergence_fn = kl_div,
-                                  bias_divergence_fn = kl_div,
-                                  activation="relu") %>%
-  layer_dense_flipout(units = 2,     bias_posterior_fn = tfp$layers$util$default_mean_field_normal_fn(),
-                                  bias_prior_fn = tfp$layers$util$default_multivariate_normal_fn,
-                                  kernel_divergence_fn = kl_div,
-                                  bias_divergence_fn = kl_div,
-                                  name = 'params_vi') %>%
-     layer_distribution_lambda(function(x)
-     tfd_normal(loc = x[, 1, drop = FALSE],
+                                  bias_divergence_fn = kl_div)(hidden)
+
+dist <- tfp$layers$DistributionLambda(function(x)
+     tfd$Normal(loc = x[, 1, drop = FALSE],
                scale = 1e-3 + 0.05 * tf$math$softplus(x[, 2, drop = FALSE])
     )
-  ) 
+  )(params) 
 ```
 
 ```{r}
 # creo modelo y lo compilo
-model_vi <- keras_model(inputs=inputs, outputs= dist)
-params <- keras_model(inputs=inputs, outputs= model_vi$get_layer('params_vi')$output)
+model_vi <- tf$keras$models$Model(inputs=inputs, outputs= dist)
+params <- keras_model(inputs=inputs, outputs= params)
 model_vi  %>% compile(optimizer=optimizer_adam(learning_rate = 0.001), loss = negloglik) 
 
 #resumen
@@ -362,7 +374,7 @@ gg3 <- ggplot() +
   geom_line(data = data_pred_vi, aes(x = x, y = upper_ci), color="red", linetype="twodash") +
   geom_line(data = data_pred_vi, aes(x = x, y = mean_pred), size = 1, color="green", linetype="twodash") +
   ggtitle(label = "Distribución de probabilidad condicional de Y", subtitle = "Enfoque Bayesiano - Inferencia variacional") + 
-  theme(plot.title = element_text(hjust = 0.5), plot.subtitle = element_text(hjust = 0.5))+ ylim(-2, 6)+ xlim(-5,25)
+  theme(plot.title = element_text(hjust = 0.5), plot.subtitle = element_text(hjust = 0.5))+ ylim(-2, 6)+ xlim(-10,30)
 
 gg3
 ```
@@ -372,27 +384,30 @@ gg3
 Repetimos el análisis anterior pero esta vez utilizando MC-Dropout en lugar de IV.
 
 ```{r include=FALSE, error=TRUE}
+
+# creo capa de entrada 
+inputs <- l$Input(shape = c(1L))
+
 # defino arquitectura de red
-dist_mc <- inputs %>%
-             layer_dense(units = 200, activation="relu") %>%
-             layer_dropout(rate = 0.1, trainable = T) %>%
-             layer_dense(units = 500, activation="relu") %>%
-             layer_dropout(rate = 0.1, trainable = T) %>%
-             layer_dense(units = 500, activation="relu")%>%
-             layer_dropout(rate = 0.1, trainable = T) %>%
-             layer_dense(units = 500, activation="relu") %>%
-             layer_dropout(rate = 0.1, trainable = T) %>%
-             layer_dense(units = 200, activation="relu") %>%
-             layer_dropout(rate = 0.1, trainable = T) %>%
-             layer_dense(units = 2, name = 'params_mc') %>% 
-             layer_distribution_lambda(function(x)
-                            tfd_normal(loc = x[, 1, drop = FALSE],
-                                       scale = tf$math$exp(x[, 2, drop = FALSE])))
+hidden <- l$Dense(200,activation="relu")(inputs)
+hidden <- l$Dropout(0.1)(hidden, training=T)
+hidden <- l$Dense(500,activation="relu")(hidden)
+hidden <- l$Dropout(0.1)(hidden, training=T)
+hidden <- l$Dense(500,activation="relu")(hidden)
+hidden <- l$Dropout(0.1)(hidden, training=T)
+hidden <- l$Dense(500,activation="relu")(hidden)
+hidden <- l$Dropout(0.1)(hidden, training=T)
+hidden <-l$Dense(200,activation="relu")(hidden)
+hidden <- l$Dropout(0.1)(hidden, training=T)
+params_mc <- l$Dense(2)(hidden)
+dist_mc <- tfp$layers$DistributionLambda(function(x)
+                            tfd$Normal(loc = x[, 1, drop = FALSE],
+                                       scale = tf$math$exp(x[, 2, drop = FALSE])))(params_mc)
 ```
 
 ```{r}
 # creo modelo y lo compilo
-model_mc <- keras_model(inputs=inputs, outputs= dist_mc)
+model_mc <- tf$keras$models$Model(inputs=inputs, outputs= dist_mc)
 model_mc  %>% compile(optimizer=optimizer_adam(learning_rate = 0.0002), loss = negloglik) 
 
 #resumen
@@ -401,22 +416,22 @@ model_mc$summary()
 
 ```{r}
 # entreno la red
-#history <- model_mc %>% fit(
-#  x = x,
-#  y = y,
-#  batch_size = 512,
-#  epochs = 1000,
-#  verbose = 1)
+history <- model_mc %>% fit(
+  x = x,
+  y = y,
+  batch_size = 512,
+  epochs = 1000,
+  verbose = 1)
 
 # veo la evolución de la función de pérdida durante el entrenamiento
-#plot(history)
+plot(history)
 ```
 
 
 ```{r}
 # guardo/cargo los pesos de la red
 #save_model_weights_hdf5(model_mc, "model_mc.hdf5")
-load_model_weights_hdf5(model_mc, "model_mc.hdf5")
+load_model_weights_hdf5(model_mc, "model_mc2.hdf5")
 ```
 
 ```{r}
@@ -439,7 +454,7 @@ gg4 <- ggplot() +
   geom_line(data = data_pred_mc, aes(x = x, y = upper_ci), color="red", linetype="twodash") +
   geom_line(data = data_pred_mc, aes(x = x, y = mean_pred), size = 1, color="green", linetype="twodash") +
   ggtitle(label = "Distribución de probabilidad condicional de Y", subtitle = "Enfoque Bayesiano - Monte Carlo Dropout") + 
-  theme(plot.title = element_text(hjust = 0.5), plot.subtitle = element_text(hjust = 0.5))+ ylim(-2, 6)+ xlim(-5,25) 
+  theme(plot.title = element_text(hjust = 0.5), plot.subtitle = element_text(hjust = 0.5))+ ylim(-2, 6)+ xlim(-10,30) 
 
 gg4
 ```
@@ -453,9 +468,9 @@ i = sample(1:200, size=1)
 
 sample_nobay = data.frame(x = x_pred, y =  nobay_cpd[i,])
 
-gg2 <- gg2 + ggtitle(label = "IC 95") + theme(plot.title = element_text(size = 10)) + labs(subtitle = NULL)
-gg3 <- gg3 + ggtitle(label = "IC 95") + theme(plot.title = element_text(size = 10)) + labs(subtitle = NULL)
-gg4 <- gg4 + ggtitle(label = "IC 95") + theme(plot.title = element_text(size = 10)) + labs(subtitle = NULL)
+gg2 <- gg2 + ggtitle(label = "IC 95") + theme(plot.title = element_text(size = 10)) + labs(subtitle = NULL) + ylim(-2, 6)+ xlim(-10,30) 
+gg3 <- gg3 + ggtitle(label = "IC 95") + theme(plot.title = element_text(size = 10)) + labs(subtitle = NULL) + ylim(-2, 6)+ xlim(-10,30) 
+gg4 <- gg4 + ggtitle(label = "IC 95") + theme(plot.title = element_text(size = 10)) + labs(subtitle = NULL) + ylim(-2, 6)+ xlim(-10,30) 
 
 
 gg5 <- ggplot() +
